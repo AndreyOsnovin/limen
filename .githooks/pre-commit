@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+
+set -e
+
+mix format --check-formatted
+mix test --max-failures=1
+mix credo suggest --format=oneline --min-priority=high
