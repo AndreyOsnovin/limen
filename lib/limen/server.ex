@@ -6,8 +6,6 @@ defmodule Limen.Server do
   alias Limen.SlidingWindow
   alias Limen.SlidingWindow.Bucket
 
-  @default_prune_interval :timer.minutes(5)
-
   @doc """
   Starts the server.
 
@@ -16,21 +14,19 @@ defmodule Limen.Server do
   * `:prune_interval` — how often expired buckets are removed, in milliseconds.
     Defaults to `5` minutes.
   """
-  @spec start_link(opts :: keyword()) :: GenServer.on_start()
+  @spec start_link(keyword()) :: GenServer.on_start()
   def start_link(opts \\ []) do
     GenServer.start_link(__MODULE__, opts)
   end
 
   @doc """
   Checks whether `key` is within the rate limit.
+
+  Returns `:ok` if the request is allowed, or `{:error, retry_after_ms}` where
+  `retry_after_ms` is the number of milliseconds to wait before retrying.
   """
-  @spec check(
-          server :: GenServer.server(),
-          key :: term(),
-          limit :: pos_integer(),
-          window_ms :: pos_integer()
-        ) ::
-          :ok | {:error, retry_after_ms :: non_neg_integer()}
+  @spec check(GenServer.server(), term(), pos_integer(), pos_integer()) ::
+          :ok | {:error, non_neg_integer()}
   def check(server, key, limit, window_ms) do
     GenServer.call(server, {:check, key, limit, window_ms})
   end
@@ -38,7 +34,7 @@ defmodule Limen.Server do
   @doc """
   Resets the counter for `key`.
   """
-  @spec reset(server :: GenServer.server(), key :: term()) :: :ok
+  @spec reset(GenServer.server(), term()) :: :ok
   def reset(server, key) do
     GenServer.call(server, {:reset, key})
   end
@@ -46,7 +42,7 @@ defmodule Limen.Server do
   @impl true
   def init(opts) do
     table = :ets.new(:buckets, [:set, :public])
-    prune_interval = Keyword.get(opts, :prune_interval, @default_prune_interval)
+    prune_interval = Keyword.fetch!(opts, :prune_interval)
     schedule_next_prune(prune_interval)
     {:ok, %{table: table, prune_interval: prune_interval}}
   end

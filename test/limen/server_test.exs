@@ -9,7 +9,8 @@ defmodule Limen.ServerTest do
   @window :timer.seconds(60)
 
   setup do
-    {:ok, server: start_supervised!(Server)}
+    server = start_supervised!({Server, prune_interval: :timer.minutes(1)})
+    {:ok, server: server}
   end
 
   describe "check/4" do

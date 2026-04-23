@@ -6,57 +6,90 @@ defmodule Limen do
 
   Rate limit state is stored in memory and is not shared across nodes.
 
-  ## Usage
+  ## Setup
 
-  Call `check/3` before processing a request. Pass any term as the key — a user
-  ID, IP address, API token, or a tuple combining several of these:
+  Add `Limen` to your supervision tree:
+
+  ```elixir
+  children = [
+    {Limen, partitions: 4, prune_interval: :timer.minutes(5)}
+  ]
+  ```
+
+  Or rely on defaults (`partitions` = schedulers online, `prune_interval` = 5 minutes):
+
+  ```elixir
+  children = [Limen]
+  ```
+
+  ## Usage
 
   ```elixir
   case Limen.check({:login, user_id}, 5, :timer.minutes(1)) do
-    :ok ->
-      # within limit — proceed
-    {:error, retry_after_ms} ->
-      # limit exceeded — retry after retry_after_ms ms
+    :ok -> # proceed
+    {:error, retry_after_ms} -> # retry after retry_after_ms ms
   end
-  ```
 
-  To reset the counter for a key (e.g. after a successful login):
-
-  ```elixir
   Limen.reset({:login, user_id})
-  ```
-
-  ## Configuration
-
-  ```elixir
-  config :limen,
-    # Number of worker processes. Increase to reduce contention under high
-    # concurrency. Defaults to the number of schedulers online.
-    partitions: System.schedulers_online(),
-
-    # How often expired buckets are removed from memory. Defaults to 5 minutes.
-    prune_interval: :timer.minutes(5)
   ```
   """
 
   alias Limen.Server
 
+  @default_prune_interval :timer.minutes(5)
+
+  @doc false
+  @spec child_spec(keyword()) :: Supervisor.child_spec()
+  def child_spec(opts) do
+    %{
+      id: __MODULE__,
+      start: {__MODULE__, :start_link, [opts]},
+      type: :supervisor
+    }
+  end
+
+  @doc """
+  Starts Limen as part of a supervision tree.
+
+  ## Options
+
+  * `:partitions` — number of worker processes. Defaults to `System.schedulers_online()`.
+  * `:prune_interval` — how often expired buckets are removed, in milliseconds.
+    Defaults to `5` minutes.
+  """
+  @spec start_link(keyword()) :: Supervisor.on_start()
+  def start_link(opts \\ []) do
+    partitions = Keyword.get(opts, :partitions, System.schedulers_online())
+    prune_interval = Keyword.get(opts, :prune_interval, @default_prune_interval)
+
+    children = [
+      {PartitionSupervisor,
+       child_spec: {Server, prune_interval: prune_interval},
+       name: Limen.Partitions,
+       partitions: partitions}
+    ]
+
+    Supervisor.start_link(children, strategy: :one_for_one, name: Limen.Supervisor)
+  end
+
   @doc """
   Checks whether `key` is within the rate limit.
+
+  Returns `:ok` if the request is allowed, or `{:error, retry_after_ms}` where
+  `retry_after_ms` is the number of milliseconds to wait before retrying.
   """
-  @spec check(key :: term(), limit :: pos_integer(), window_ms :: pos_integer()) ::
-          :ok | {:error, retry_after_ms :: non_neg_integer()}
+  @spec check(term(), pos_integer(), pos_integer()) :: :ok | {:error, non_neg_integer()}
   def check(key, limit, window_ms) do
-    via = {:via, PartitionSupervisor, {Limen.Server.Partitions, key}}
+    via = {:via, PartitionSupervisor, {Limen.Partitions, key}}
     Server.check(via, key, limit, window_ms)
   end
 
   @doc """
   Resets the counter for `key`.
   """
-  @spec reset(key :: term()) :: :ok
+  @spec reset(term()) :: :ok
   def reset(key) do
-    via = {:via, PartitionSupervisor, {Limen.Server.Partitions, key}}
+    via = {:via, PartitionSupervisor, {Limen.Partitions, key}}
     Server.reset(via, key)
   end
 end

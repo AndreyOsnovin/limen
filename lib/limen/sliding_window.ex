@@ -8,6 +8,10 @@ defmodule Limen.SlidingWindow do
   @doc """
   Checks whether a request is within the rate limit.
 
+  Returns `{:allow, updated_bucket}` if the request is allowed, or
+  `{:deny, retry_after_ms}` where `retry_after_ms` is the number of
+  milliseconds to wait before retrying.
+
   ## Examples
 
       iex> bucket = Limen.SlidingWindow.Bucket.new(0)
@@ -16,12 +20,8 @@ defmodule Limen.SlidingWindow do
       %Limen.SlidingWindow.Bucket{current_count: 1, previous_count: 0, window_start: 0}
 
   """
-  @spec check(
-          bucket :: Bucket.t(),
-          limit :: pos_integer(),
-          window_ms :: pos_integer(),
-          now_ms :: integer()
-        ) :: {:allow, Bucket.t()} | {:deny, retry_after_ms :: non_neg_integer()}
+  @spec check(Bucket.t(), pos_integer(), pos_integer(), integer()) ::
+          {:allow, Bucket.t()} | {:deny, non_neg_integer()}
   def check(%Bucket{} = bucket, limit, window_ms, now_ms) do
     elapsed = now_ms - bucket.window_start
     do_check(bucket, limit, window_ms, elapsed, now_ms)
@@ -48,8 +48,8 @@ defmodule Limen.SlidingWindow do
 
       {:allow, bucket}
     else
-      retry_after = retry_after(bucket.current_count, limit - 1, window_offset, window_ms)
-      {:deny, retry_after}
+      retry_ms = retry_after(bucket.current_count, limit - 1, window_offset, window_ms)
+      {:deny, retry_ms}
     end
   end
 
@@ -61,10 +61,9 @@ defmodule Limen.SlidingWindow do
     if estimated_count <= limit do
       {:allow, %{bucket | current_count: bucket.current_count + 1}}
     else
-      retry_after =
-        retry_after(bucket.previous_count, limit - 1 - bucket.current_count, elapsed, window_ms)
-
-      {:deny, retry_after}
+      remaining = limit - 1 - bucket.current_count
+      retry_ms = retry_after(bucket.previous_count, remaining, elapsed, window_ms)
+      {:deny, retry_ms}
     end
   end
 

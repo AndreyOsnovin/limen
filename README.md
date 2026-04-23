@@ -5,34 +5,35 @@ Rate limiting based on the
 
 Rate limit state is stored in memory and is not shared across nodes.
 
-## Usage
+## Setup
 
-Call `Limen.check/3` before processing a request. Pass any term as the key — a user
-ID, IP address, API token, or a tuple combining several of these:
+Add `Limen` to your supervision tree:
+
+```elixir
+children = [
+  {Limen, partitions: 4, prune_interval: :timer.minutes(5)}
+]
+```
+
+Or rely on defaults (`partitions` = schedulers online, `prune_interval` = 5 minutes):
+
+```elixir
+children = [Limen]
+```
+
+## Usage
 
 ```elixir
 case Limen.check({:login, user_id}, 5, :timer.minutes(1)) do
   :ok ->
-    # within limit — proceed
+    # proceed
   {:error, retry_after_ms} ->
-    # limit exceeded — ask the client to retry after retry_after_ms milliseconds
+    # retry after retry_after_ms ms
 end
 ```
 
-To clear the counter for a key (e.g. after a successful password reset):
+To reset the counter for a key (e.g. after a successful login):
 
 ```elixir
 Limen.reset({:login, user_id})
-```
-
-## Configuration
-
-```elixir
-config :limen,
-  # Number of worker processes. Increase to reduce contention under high
-  # concurrency. Defaults to the number of schedulers online.
-  partitions: System.schedulers_online(),
-
-  # How often expired counters are removed from memory. Defaults to 5 minutes.
-  prune_interval: :timer.minutes(5)
 ```

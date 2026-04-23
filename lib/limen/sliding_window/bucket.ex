@@ -17,7 +17,7 @@ defmodule Limen.SlidingWindow.Bucket do
   @enforce_keys [:window_start]
   defstruct [:window_start, current_count: 0, previous_count: 0]
 
-  @spec new(window_start :: integer(), opts :: keyword()) :: t()
+  @spec new(integer(), keyword()) :: t()
   def new(window_start, opts \\ []) do
     %__MODULE__{
       window_start: window_start,
