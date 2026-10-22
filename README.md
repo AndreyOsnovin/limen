@@ -3,7 +3,8 @@
 Rate limiting based on the
 [Sliding Window Counter](https://blog.cloudflare.com/counting-things-a-lot-of-different-things/) algorithm.
 
-Rate limit state is stored in memory and is not shared across nodes.
+Rate limit state is stored in memory and is not shared across nodes. If a
+partition process crashes, the counters it held are lost.
 
 ## Setup
 

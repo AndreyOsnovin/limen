@@ -4,7 +4,8 @@ defmodule Limen do
   [Sliding Window Counter](https://blog.cloudflare.com/counting-things-a-lot-of-different-things)
   algorithm.
 
-  Rate limit state is stored in memory and is not shared across nodes.
+  Rate limit state is stored in memory and is not shared across nodes. If a
+  partition process crashes, the counters it held are lost.
 
   ## Setup
 
@@ -54,6 +55,8 @@ defmodule Limen do
   ## Options
 
   * `:partitions` — number of worker processes. Defaults to `System.schedulers_online()`.
+    Pruning briefly blocks a partition (about 1 second per million keys in it),
+    so raise this for many keys, e.g. `64`.
   * `:prune_interval` — how often expired buckets are removed, in milliseconds.
     Defaults to `5` minutes.
   """
@@ -77,15 +80,21 @@ defmodule Limen do
 
   Returns `:ok` if the request is allowed, or `{:error, retry_after_ms}` where
   `retry_after_ms` is the number of milliseconds to wait before retrying.
+
+  The same `key` may be checked against several windows (e.g. 10 per minute and
+  100 per hour); each `window_ms` is tracked independently.
+
+  Raises `FunctionClauseError` unless `limit` and `window_ms` are positive integers.
   """
   @spec check(term(), pos_integer(), pos_integer()) :: :ok | {:error, non_neg_integer()}
-  def check(key, limit, window_ms) do
+  def check(key, limit, window_ms)
+      when is_integer(limit) and limit > 0 and is_integer(window_ms) and window_ms > 0 do
     via = {:via, PartitionSupervisor, {Limen.Partitions, key}}
     Server.check(via, key, limit, window_ms)
   end
 
   @doc """
-  Resets the counter for `key`.
+  Resets the counters for `key` across all windows.
   """
   @spec reset(term()) :: :ok
   def reset(key) do

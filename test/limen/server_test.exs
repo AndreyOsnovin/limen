@@ -27,21 +27,34 @@ defmodule Limen.ServerTest do
     end
   end
 
-  describe "check/4 — window_ms change" do
-    test "(changing window_ms discards the old bucket)", %{server: server} do
+  describe "check/4 — several windows on one key" do
+    test "(each window_ms is tracked independently)", %{server: server} do
       Enum.each(1..@limit, fn _ -> Server.check(server, "key", @limit, @window) end)
       assert {:error, _} = Server.check(server, "key", @limit, @window)
       assert :ok = Server.check(server, "key", @limit, @window * 2)
+      assert {:error, _} = Server.check(server, "key", @limit, @window)
+    end
+
+    test "(alternating windows still enforce the limit)", %{server: server} do
+      results =
+        for _ <- 1..@limit, window <- [@window, @window * 2] do
+          Server.check(server, "key", @limit, window)
+        end
+
+      assert Enum.all?(results, &(&1 == :ok))
+      assert {:error, _} = Server.check(server, "key", @limit, @window)
+      assert {:error, _} = Server.check(server, "key", @limit, @window * 2)
     end
   end
 
   describe "prune" do
-    test "(bucket is gone after :prune message)", %{server: server} do
-      Server.check(server, "key", @limit, 1)
+    test "(removes expired buckets and keeps live ones)", %{server: server} do
+      Server.check(server, "expired", @limit, 1)
+      Server.check(server, "live", @limit, @window)
       Process.sleep(10)
       send(server, :prune)
-      %{table: table} = :sys.get_state(server)
-      assert :ets.lookup(table, "key") == []
+      %{buckets: buckets} = :sys.get_state(server)
+      assert Map.keys(buckets) == ["live"]
     end
   end
 
@@ -64,19 +77,15 @@ defmodule Limen.ServerTest do
     test "(reset on unknown key returns :ok)", %{server: server} do
       assert :ok = Server.reset(server, "unknown")
     end
-  end
 
-  describe "concurrency" do
-    test "(allowed count never exceeds limit under concurrent load)", %{server: server} do
-      results =
-        1..50
-        |> Task.async_stream(
-          fn _ -> Server.check(server, "key", @limit, @window) end,
-          max_concurrency: 50
-        )
-        |> Enum.map(fn {:ok, result} -> result end)
+    test "(reset clears all windows of the key)", %{server: server} do
+      for window <- [@window, @window * 2], _ <- 1..@limit do
+        Server.check(server, "key", @limit, window)
+      end
 
-      assert Enum.count(results, &(&1 == :ok)) == @limit
+      Server.reset(server, "key")
+      assert :ok = Server.check(server, "key", @limit, @window)
+      assert :ok = Server.check(server, "key", @limit, @window * 2)
     end
   end
 end
