@@ -12,10 +12,10 @@ defmodule Limen.Server do
   ## Options
 
   * `:prune_interval` — how often expired buckets are removed, in milliseconds.
-    Defaults to `5` minutes.
+    Required.
   """
   @spec start_link(keyword()) :: GenServer.on_start()
-  def start_link(opts \\ []) do
+  def start_link(opts) do
     GenServer.start_link(__MODULE__, opts)
   end
 
@@ -32,30 +32,32 @@ defmodule Limen.Server do
   end
 
   @doc """
-  Resets the counter for `key`.
+  Resets the counters for `key` across all windows.
   """
   @spec reset(GenServer.server(), term()) :: :ok
   def reset(server, key) do
     GenServer.call(server, {:reset, key})
   end
 
+  # Buckets are stored as `%{key => %{window_ms => bucket}}`, so several limits
+  # with different windows on the same key do not reset each other.
   @impl true
   def init(opts) do
-    table = :ets.new(:buckets, [:set, :public])
     prune_interval = Keyword.fetch!(opts, :prune_interval)
     schedule_next_prune(prune_interval)
-    {:ok, %{table: table, prune_interval: prune_interval}}
+    {:ok, %{buckets: %{}, prune_interval: prune_interval}}
   end
 
   @impl true
-  def handle_call({:check, key, limit, window_ms}, _from, %{table: table} = state) do
+  def handle_call({:check, key, limit, window_ms}, _from, %{buckets: buckets} = state) do
     now_ms = System.monotonic_time(:millisecond)
-    bucket = upsert_bucket(table, key, window_ms, now_ms)
+    windows = Map.get(buckets, key, %{})
+    bucket = Map.get_lazy(windows, window_ms, fn -> Bucket.new(now_ms) end)
 
     case SlidingWindow.check(bucket, limit, window_ms, now_ms) do
       {:allow, updated_bucket} ->
-        :ets.insert(table, {key, updated_bucket, window_ms})
-        {:reply, :ok, state}
+        windows = Map.put(windows, window_ms, updated_bucket)
+        {:reply, :ok, %{state | buckets: Map.put(buckets, key, windows)}}
 
       {:deny, retry_after_ms} ->
         {:reply, {:error, retry_after_ms}, state}
@@ -63,25 +65,29 @@ defmodule Limen.Server do
   end
 
   @impl true
-  def handle_call({:reset, key}, _from, %{table: table} = state) do
-    :ets.delete(table, key)
-    {:reply, :ok, state}
+  def handle_call({:reset, key}, _from, %{buckets: buckets} = state) do
+    {:reply, :ok, %{state | buckets: Map.delete(buckets, key)}}
   end
 
+  # shortcut: prune blocks the partition (~1s per 1M keys in it); raise `:partitions`,
+  # or move buckets to ETS and run `select_delete` in a separate process.
   @impl true
-  def handle_info(:prune, %{table: table, prune_interval: prune_interval} = state) do
-    Task.start(fn ->
-      now_ms = System.monotonic_time(:millisecond)
+  def handle_info(:prune, %{buckets: buckets, prune_interval: prune_interval} = state) do
+    now_ms = System.monotonic_time(:millisecond)
 
-      :ets.select_delete(table, [
-        {{:_, %Bucket{window_start: :"$1", current_count: :_, previous_count: :_}, :"$2"},
-         [{:>=, {:-, now_ms, :"$1"}, {:*, 2, :"$2"}}], [true]}
-      ])
-    end)
+    buckets =
+      for {key, windows} <- buckets,
+          windows =
+            Map.reject(windows, fn {window_ms, bucket} ->
+              SlidingWindow.expired?(bucket, window_ms, now_ms)
+            end),
+          windows != %{},
+          into: %{},
+          do: {key, windows}
 
     schedule_next_prune(prune_interval)
 
-    {:noreply, state}
+    {:noreply, %{state | buckets: buckets}}
   end
 
   @impl true
@@ -89,13 +95,5 @@ defmodule Limen.Server do
 
   defp schedule_next_prune(interval) do
     Process.send_after(self(), :prune, interval)
-  end
-
-  # If `window_ms` changed for an existing key, the old bucket is discarded and a new window starts.
-  defp upsert_bucket(table, key, window_ms, now_ms) do
-    case :ets.lookup(table, key) do
-      [{_, bucket, ^window_ms}] -> bucket
-      _ -> Bucket.new(now_ms)
-    end
   end
 end

@@ -5,8 +5,8 @@ defmodule Limen.SlidingWindow.Bucket do
   State of a single rate-limit bucket.
 
   * `window_start` — monotonic timestamp (ms) when the current window began
-  * `current_count`  — request count in the current fixed window
-  * `previous_count` — request count from the preceding fixed window
+  * `current_count`  — allowed requests in the current fixed window
+  * `previous_count` — allowed requests in the preceding fixed window
   """
   @type t :: %__MODULE__{
           window_start: integer(),
